@@ -28,16 +28,8 @@ class PlutoProvider(BaseProvider):
         
         # Configuration from environment (e.g., 'us', 'gb', 'ca')
         self.region = os.getenv('PLUTO_REGION', 'us').lower()
-        
-        # Optimized IPs from official source to fix freezing/commercial issues
-        self.x_forward = {
-            "us": "185.236.200.172", "gb": "84.17.50.173", "ca": "192.206.151.131", 
-            "fr": "176.31.84.249", "de": "217.94.184.66", "es": "88.26.241.248", 
-            "it": "131.114.130.239", "br": "177.192.255.38", "mx": "200.68.128.83", 
-            "ar": "168.226.232.228", "cl": "181.200.138.240", "no": "78.26.38.103", 
-            "se": "185.6.8.2", "dk": "192.36.27.7",
-        }
-        
+ 
+
         self.headers = {
             'authority': 'boot.pluto.tv',
             'accept': '*/*',
@@ -47,8 +39,7 @@ class PlutoProvider(BaseProvider):
             'user-agent': self.get_user_agent(),
         }
         
-        if self.region in self.x_forward:
-            self.headers["X-Forwarded-For"] = self.x_forward[self.region]
+
 
     def _get_session_token(self) -> str:
         if self.session_token and datetime.now().timestamp() < self.session_expires_at:
