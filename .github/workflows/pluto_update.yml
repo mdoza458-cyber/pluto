@@ -48,7 +48,8 @@ jobs:
           rm -f pluto_se.m3u
           rm -f pluto_dk.m3u
 
-          for region in us ca gb de mx no se dk; do
+          # Generate playlists only for enabled regions.
+          for region in us ca gb mx no dk; do
             echo "========================================"
             echo "Updating Pluto region: $region"
             echo "========================================"
@@ -68,7 +69,7 @@ jobs:
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
 
-          # Stage ALL changes, not just *.m3u files.
+          # Stage all changes, including removed regional playlists.
           git add -A
 
           # Exit cleanly if nothing changed.
@@ -78,7 +79,7 @@ jobs:
           fi
 
           # Commit generated playlists.
-          git commit -m "Update Pluto: New Regions and Improved Session IPs"
+          git commit -m "Update Pluto playlists: Exclude Germany and Sweden"
 
           # Get the latest version of main.
           git fetch origin main
