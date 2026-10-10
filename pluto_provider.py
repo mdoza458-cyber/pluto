@@ -12,10 +12,8 @@ REGIONS = {
     "us": {"priority": 1, "label": "United States"},
     "ca": {"priority": 2, "label": "Canada"},
     "gb": {"priority": 3, "label": "United Kingdom"},
-    "de": {"priority": 4, "label": "Germany"},
     "mx": {"priority": 5, "label": "Mexico"},
     "no": {"priority": 6, "label": "Norway"},
-    "se": {"priority": 7, "label": "Sweden"},
     "dk": {"priority": 8, "label": "Denmark"},
 }
 
@@ -70,10 +68,8 @@ class PlutoProvider(BaseProvider):
             "us": "185.236.200.172",
             "ca": "192.206.151.131",
             "gb": "84.17.50.173",
-            "de": "217.94.184.66",
             "mx": "200.68.128.83",
             "no": "78.26.38.103",
-            "se": "185.6.8.2",
             "dk": "192.36.27.7",
         }
 
