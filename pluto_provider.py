@@ -1,27 +1,39 @@
 import requests
-import json
 import uuid
 import os
-import glob
 import sys
 import re
 from datetime import datetime
 from typing import List, Dict, Any
 
+# The only regions this workflow should generate.
+REGIONS = {
+    "us": {"priority": 1, "label": "United States"},
+    "ca": {"priority": 2, "label": "Canada"},
+    "gb": {"priority": 3, "label": "United Kingdom"},
+    "de": {"priority": 4, "label": "Germany"},
+    "mx": {"priority": 5, "label": "Mexico"},
+    "no": {"priority": 6, "label": "Norway"},
+    "se": {"priority": 7, "label": "Sweden"},
+    "dk": {"priority": 8, "label": "Denmark"},
+}
 
 class BaseProvider:
     def __init__(self, name):
         self.name = name
 
     def get_user_agent(self):
-        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.0.0 Safari/537.36"
+        )
 
     def get_timeout(self):
         return 30
 
-
 class PlutoProvider(BaseProvider):
-    """Provider for Pluto TV with HD Resolution, Categories, and Regional EPGs"""
+    """Pluto TV provider with regional playlists and categories."""
 
     def __init__(self):
         super().__init__("pluto")
@@ -31,11 +43,15 @@ class PlutoProvider(BaseProvider):
         self.stitcher_params = ""
         self.session_expires_at = 0
 
-        # Configuration from environment (e.g., 'us', 'gb', 'ca')
         self.region = os.getenv("PLUTO_REGION", "us").lower()
 
-        # Regional IP mappings retained from the original provider.
-        # Only regions used by the GitHub Actions workflow are included.
+        if self.region not in REGIONS:
+            raise ValueError(
+                f"Unsupported region: {self.region}. "
+                f"Enabled regions: {', '.join(REGIONS)}"
+            )
+
+        # Regional forwarding IPs retained from your working version.
         self.x_forward = {
             "us": "185.236.200.172",
             "ca": "192.206.151.131",
@@ -56,7 +72,6 @@ class PlutoProvider(BaseProvider):
             "user-agent": self.get_user_agent(),
         }
 
-        # Restore the original regional forwarding header.
         if self.region in self.x_forward:
             self.headers["X-Forwarded-For"] = self.x_forward[self.region]
 
@@ -91,10 +106,9 @@ class PlutoProvider(BaseProvider):
                 params=params,
                 timeout=self.get_timeout(),
             )
-
             response.raise_for_status()
-            data = response.json()
 
+            data = response.json()
             self.session_token = data.get("sessionToken", "")
             self.stitcher_params = data.get("stitcherParams", "")
             self.session_expires_at = (
@@ -105,14 +119,12 @@ class PlutoProvider(BaseProvider):
 
         except Exception as exc:
             print(
-                f"[{self.region.upper()}] Session token error: {exc}",
+                f"[{self.region.upper()}] Session error: {exc}",
                 file=sys.stderr,
             )
             return ""
 
     def _get_categories(self, headers: dict) -> dict:
-        """Fetch category names for the current regional request."""
-
         try:
             url = (
                 "https://service-channels.clusters.pluto.tv/"
@@ -124,215 +136,192 @@ class PlutoProvider(BaseProvider):
                 headers=headers,
                 timeout=self.get_timeout(),
             )
-
             response.raise_for_status()
-            data = response.json().get("data", [])
 
+            data = response.json().get("data", [])
             cat_map = {}
 
             for category in data:
-                cat_name = category.get("name", "General")
-
+                category_name = category.get("name", "General")
                 for channel_id in category.get("channelIDs", []):
-                    cat_map[channel_id] = cat_name
+                    cat_map[channel_id] = category_name
 
             return cat_map
 
         except Exception as exc:
             print(
-                f"[{self.region.upper()}] Category request error: {exc}",
+                f"[{self.region.upper()}] Category error: {exc}",
                 file=sys.stderr,
             )
             return {}
 
     def get_channels(self) -> List[Dict[str, Any]]:
-        try:
-            token = self._get_session_token()
+        token = self._get_session_token()
 
-            if not token:
-                print(
-                    f"[{self.region.upper()}] No session token received.",
-                    file=sys.stderr,
-                )
-                return []
-
-            url = (
-                "https://service-channels.clusters.pluto.tv/"
-                "v2/guide/channels"
+        if not token:
+            raise RuntimeError(
+                f"No Pluto session token for region {self.region}"
             )
 
-            # Copy the regional headers, including X-Forwarded-For.
-            headers = self.headers.copy()
-            headers["authorization"] = f"Bearer {token}"
+        url = (
+            "https://service-channels.clusters.pluto.tv/"
+            "v2/guide/channels"
+        )
 
+        headers = self.headers.copy()
+        headers["authorization"] = f"Bearer {token}"
+
+        try:
             response = requests.get(
                 url,
                 params={"limit": "1000"},
                 headers=headers,
                 timeout=self.get_timeout(),
             )
-
             response.raise_for_status()
+
             channel_data = response.json().get("data", [])
 
-            print(
-                f"[{self.region.upper()}] "
-                f"Received {len(channel_data)} channels from the API."
-            )
-
-            categories_list = self._get_categories(headers)
-
-            processed_channels = []
-
-            for channel in channel_data:
-                channel_id = channel.get("id")
-                name = channel.get("name")
-
-                if not channel_id or not name:
-                    continue
-
-                logo = next(
-                    (
-                        img.get("url")
-                        for img in channel.get("images", [])
-                        if img.get("type") == "colorLogoPNG"
-                    ),
-                    "",
-                )
-
-                group = categories_list.get(channel_id, "Pluto TV")
-
-                sid = str(uuid.uuid4())
-
-                quality_suffix = (
-                    "&quality=720p&deviceMake=chrome&deviceType=web"
-                    "&deviceModel=web&deviceVersion=133.0.0"
-                    "&architecture=x86_64&buildVersion=1.0.0"
-                    "&includeExtendedEvents=true"
-                    "&masterJWTPassthrough=true"
-                )
-
-                stream_url = (
-                    "https://cfd-v4-service-channel-stitcher-use1-1."
-                    "prd.pluto.tv/v2/stitch/hls/channel/"
-                    f"{channel_id}/master.m3u8"
-                    f"?{self.stitcher_params}&jwt={token}"
-                    f"{quality_suffix}"
-                )
-
-                processed_channels.append(
-                    {
-                        "id": str(channel_id),
-                        "name": name,
-                        "stream_url": stream_url,
-                        "logo": logo,
-                        "group": group,
-                    }
-                )
-
-            print(
-                f"[{self.region.upper()}] "
-                f"Processed {len(processed_channels)} channels."
-            )
-
-            return processed_channels
-
         except Exception as exc:
-            print(
-                f"[{self.region.upper()}] Channel request error: {exc}",
-                file=sys.stderr,
+            raise RuntimeError(
+                f"[{self.region.upper()}] Channel request failed: {exc}"
+            ) from exc
+
+        print(
+            f"[{self.region.upper()}] API returned "
+            f"{len(channel_data)} channels."
+        )
+
+        categories = self._get_categories(headers)
+        processed_channels = []
+
+        for channel in channel_data:
+            channel_id = channel.get("id")
+            name = channel.get("name")
+
+            if not channel_id or not name:
+                continue
+
+            logo = next(
+                (
+                    image.get("url")
+                    for image in channel.get("images", [])
+                    if image.get("type") == "colorLogoPNG"
+                ),
+                "",
             )
-            return []
+
+            group = categories.get(channel_id, "Pluto TV")
+
+            quality_suffix = (
+                "&quality=720p&deviceMake=chrome&deviceType=web"
+                "&deviceModel=web&deviceVersion=133.0.0"
+                "&architecture=x86_64&buildVersion=1.0.0"
+                "&includeExtendedEvents=true"
+                "&masterJWTPassthrough=true"
+            )
+
+            stream_url = (
+                "https://cfd-v4-service-channel-stitcher-use1-1."
+                "prd.pluto.tv/v2/stitch/hls/channel/"
+                f"{channel_id}/master.m3u8"
+                f"?{self.stitcher_params}&jwt={token}"
+                f"{quality_suffix}"
+            )
+
+            processed_channels.append({
+                "id": str(channel_id),
+                "name": name,
+                "stream_url": stream_url,
+                "logo": logo,
+                "group": group,
+            })
+
+        if not processed_channels:
+            raise RuntimeError(
+                f"[{self.region.upper()}] No channels were generated; "
+                "refusing to overwrite the regional playlist."
+            )
+
+        print(
+            f"[{self.region.upper()}] Processed "
+            f"{len(processed_channels)} channels."
+        )
+
+        return processed_channels
 
     def generate_m3u(self, channels):
-        # Use the EPG URL corresponding to the selected region.
         m3u = (
             '#EXTM3U url-tvg="https://github.com/'
             'matthuisman/i.mjh.nz/raw/master/PlutoTV/'
             f'{self.region}.xml.gz"\n'
         )
 
-        for ch in channels:
+        for channel in channels:
             m3u += (
-                f'#EXTINF:-1 tvg-id="{ch["id"]}" '
-                f'tvg-logo="{ch["logo"]}" '
-                f'group-title="{ch["group"]}",{ch["name"]}\n'
+                f'#EXTINF:-1 tvg-id="{channel["id"]}" '
+                f'tvg-logo="{channel["logo"]}" '
+                f'group-title="{channel["group"]}",'
+                f'{channel["name"]}\n'
             )
-
-            m3u += f'{ch["stream_url"]}\n'
+            m3u += f'{channel["stream_url"]}\n'
 
         return m3u
 
-
 def merge_master_playlist():
-    """Combine regional playlists and label each channel by country."""
-
-    sort_config = {
-        "us": {"priority": 1, "label": "United States"},
-        "ca": {"priority": 2, "label": "Canada"},
-        "gb": {"priority": 3, "label": "United Kingdom"},
-        "fr": {"priority": 4, "label": "France"},
-        "de": {"priority": 5, "label": "Germany"},
-        "es": {"priority": 6, "label": "Spain"},
-        "it": {"priority": 7, "label": "Italy"},
-        "mx": {"priority": 8, "label": "Mexico"},
-        "br": {"priority": 9, "label": "Brazil"},
-        "ar": {"priority": 10, "label": "Argentina"},
-        "cl": {"priority": 11, "label": "Chile"},
-        "no": {"priority": 12, "label": "Norway"},
-        "se": {"priority": 13, "label": "Sweden"},
-        "dk": {"priority": 14, "label": "Denmark"},
-    }
-
-    files = [
-        f
-        for f in glob.glob("pluto_*.m3u")
-        if "all.m3u" not in f and "master.m3u" not in f
-    ]
-
-    sorted_files = sorted(
-        files,
-        key=lambda x: sort_config.get(
-            x.replace("pluto_", "").replace(".m3u", ""),
-            {},
-        ).get("priority", 99),
-    )
+    """Merge only enabled regional playlists into pluto_all.m3u."""
 
     master_content = (
         '#EXTM3U url-tvg="https://github.com/'
         'matthuisman/i.mjh.nz/raw/master/PlutoTV/all.xml.gz"\n'
     )
 
-    for file in sorted_files:
-        region_key = file.replace("pluto_", "").replace(".m3u", "")
+    total_channels = 0
 
-        country_label = sort_config.get(
-            region_key,
-            {"label": region_key.upper()},
-        )["label"]
+    for region, config in sorted(
+        REGIONS.items(),
+        key=lambda item: item[1]["priority"],
+    ):
+        filename = f"pluto_{region}.m3u"
 
-        if os.path.exists(file):
-            with open(file, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("#EXTINF"):
-                        # Replace category names with country names in All.
-                        line = re.sub(
-                            r'group-title="[^"]*"',
-                            f'group-title="{country_label}"',
-                            line,
-                        )
-                        master_content += line
+        if not os.path.exists(filename):
+            raise FileNotFoundError(
+                f"Missing regional playlist: {filename}. "
+                "The merge has been stopped to avoid an incomplete master."
+            )
 
-                    elif not line.startswith("#EXTM3U") and line.strip():
-                        master_content += line
+        with open(filename, "r", encoding="utf-8") as playlist:
+            lines = playlist.readlines()
 
-    with open("pluto_all.m3u", "w", encoding="utf-8") as f:
-        f.write(master_content)
+        if len(lines) <= 1:
+            raise RuntimeError(
+                f"{filename} is empty or has no channels."
+            )
+
+        for line in lines:
+            if line.startswith("#EXTINF"):
+                line = re.sub(
+                    r'group-title="[^"]*"',
+                    f'group-title="{config["label"]}"',
+                    line,
+                )
+                master_content += line
+                total_channels += 1
+
+            elif not line.startswith("#EXTM3U") and line.strip():
+                master_content += line
+
+    temp_file = "pluto_all.m3u.tmp"
+
+    with open(temp_file, "w", encoding="utf-8") as output:
+        output.write(master_content)
+
+    os.replace(temp_file, "pluto_all.m3u")
 
     print(
-        f"Master playlist generated from {len(sorted_files)} regional files."
+        f"Master playlist generated with {total_channels} entries "
+        f"from {len(REGIONS)} enabled regions."
     )
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--merge":
@@ -343,11 +332,37 @@ if __name__ == "__main__":
         channels = provider.get_channels()
 
         output_file = f"pluto_{provider.region}.m3u"
+        temp_file = output_file + ".tmp"
 
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(provider.generate_m3u(channels))
+        with open(temp_file, "w", encoding="utf-8") as output:
+            output.write(provider.generate_m3u(channels))
+
+        os.replace(temp_file, output_file)
 
         print(
-            f"[{provider.region.upper()}] "
-            f"Wrote {len(channels)} channels to {output_file}"
+            f"[{provider.region.upper()}] Wrote "
+            f"{len(channels)} channels to {output_file}"
         )
+```
+
+## One small workflow change is also needed
+
+Your existing YAML removes the eight enabled playlists before regenerating them, but it doesn't remove old regional files for countries you no longer use.
+
+In the Update Regional Playlists step, add this cleanup before the loop:
+
+bash
+```
+# Remove stale regional playlists not in the enabled region list.
+for file in pluto_*.m3u; do
+  [ -e "$file" ] || continue
+
+  case "$file" in
+    pluto_us.m3u|pluto_ca.m3u|pluto_gb.m3u|pluto_de.m3u|pluto_mx.m3u|pluto_no.m3u|pluto_se.m3u|pluto_dk.m3u|pluto_all.m3u)
+      ;;
+    *)
+      echo "Removing disabled regional playlist: $file"
+      rm -f "$file"
+      ;;
+  esac
+done
